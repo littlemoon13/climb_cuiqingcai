@@ -1,4 +1,6 @@
 import json
+import multiprocessing
+import random
 import re
 
 import requests
@@ -8,8 +10,11 @@ from urllib.parse import urlencode
 import time
 import pymongo
 from config import *
+import os
+from hashlib import md5
+from json.decoder import JSONDecodeError
 
-client = pymongo.MongoClient(MONGO_URL)
+client = pymongo.MongoClient(MONGO_URL, connect=False)
 db = client[MONGO_DB]
 
 # headers = {
@@ -76,12 +81,15 @@ def get_page_index(offset, keyword):
 
 
 def parse_page_index(html):
-    data = json.loads(html)
-    if data and 'data' in data.keys():
-        for items in data.get('data'):
-            # 排除None值
-            if items.get('article_url'):
-                yield items.get('article_url')
+    try:
+        data = json.loads(html)
+        if data and 'data' in data.keys():
+            for items in data.get('data'):
+                # 排除None值
+                if items.get('article_url'):
+                    yield items.get('article_url')
+    except JSONDecoderError:
+        pass
 
 
 def get_page_detail(url):
@@ -104,10 +112,14 @@ def get_page_detail(url):
 def parse_page_detail(html, url):
     soup = BeautifulSoup(html, 'lxml')
     # print(soup)
-    article_title = soup.select('title')[0].get_text()
-    # article_content = soup.select('articleInfo')[0].get_text()
-    print(article_title)
-    # print(article_content)
+    try:
+        article_title = soup.select('title')[0].get_text()
+        # article_content = soup.select('articleInfo')[0].get_text()
+        print(article_title)
+        # print(article_content)
+    except IndexError:
+        print('获取标题时的索引错误')
+        article_title = '获取标题索引错误'
 
     # img_pattern = re.compile('<div class="pgc-img".*?<img src=(.*?) img_width', re.S)
     # print(html)
@@ -120,6 +132,9 @@ def parse_page_detail(html, url):
         if data_dic and 'sub_images' in data_dic.keys():
             sub_images = data_dic.get('sub_images')
             images_url_lis = [item.get('url').replace('\\', '') for item in sub_images]
+            # print(images_url_lis)
+            for images_url_li in images_url_lis:
+                save_image(download_image(images_url_li), article_title)
             return {
                 'article_title': article_title,
                 'url': url,
@@ -134,8 +149,30 @@ def save_to_mongo(res_dic):
     return False
 
 
-def main():
-    html = get_page_index('0', '街拍')
+def download_image(url):
+    print('当前正在下载： ', url)
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.content
+        return None
+    except RequestException:
+        return None
+
+
+def save_image(content, title):
+    path = f'{os.getcwd()}/{title}'
+    if not os.path.exists(path):
+        os.makedirs(path)
+    with open(path+f'/{md5(content).hexdigest()}.jpg', 'wb') as f:
+        f.write(content)
+
+
+def main(offset):
+    random_time = random.randint(1, 3)
+    print('随机等待时间: %ds'%random_time)
+    time.sleep(random_time)
+    html = get_page_index(offset, KEYWORDS)
     for url in parse_page_index(html):
         # print(url)
         html = get_page_detail(url)
@@ -147,4 +184,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # 普通抓取
+    for offset in range(0, 100, 20):
+        main(offset)
+    # # 多进程
+    # pool = multiprocessing.Pool()
+    # pool.map(main, [offset*20 for offset in range(GROUP_START, GROUP_END+1)])
